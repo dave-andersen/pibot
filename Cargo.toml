@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 atrium-api = "0.25.0"
 bsky-sdk = "0.1.16"
+chrono = "0.4.40"
+clap = { version = "4.5.31", features = ["derive"] }
 fastrand = "2.3.0"
 reqwest = "0.12.12"
 serde = { version = "1.0.218", features = ["derive"] }

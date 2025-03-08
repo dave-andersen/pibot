@@ -1,5 +1,6 @@
-=Pi Search Bot for Bsky
+# Pi Search Bot for Bsky
 
-
-* Installing
-```sudo apt install libssl-dev```
+## Installing
+```bash
+sudo apt install libssl-dev
+```

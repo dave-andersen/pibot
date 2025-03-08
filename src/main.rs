@@ -2,7 +2,7 @@ use atrium_api::app::bsky::feed::post::RecordData;
 use atrium_api::types::string::Datetime;
 use bsky_sdk::BskyAgent;
 use bsky_sdk::rich_text::RichText;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use fastrand;
 use reqwest;
 use serde::Deserialize;
@@ -65,23 +65,6 @@ fn get_today_date() -> String {
     chrono::Utc::now().format("%Y%m%d").to_string()
 }
 
-async fn post_to_bsky(agent: &BskyAgent, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let rt = RichText::new_with_detect_facets(text).await?;
-    agent
-        .create_record(RecordData {
-            created_at: Datetime::now(),
-            embed: None,
-            entities: None,
-            facets: rt.facets,
-            labels: None,
-            langs: None,
-            reply: None,
-            tags: Some(["#pi".to_string()].to_vec()),
-            text: rt.text,
-        })
-        .await?;
-    Ok(())
-}
 #[derive(clap::Parser)]
 #[command(
     name = "pibot",
@@ -92,9 +75,56 @@ async fn post_to_bsky(agent: &BskyAgent, text: &str) -> Result<(), Box<dyn std::
 struct Cli {
     #[arg(
         long,
-        help = "Post today's date in the form YYYYMMDD with the pi search results"
+        help = "Be a BlueSky Bot. Commands: random, today, stream"
     )]
-    today: bool,
+
+    #[arg(
+        long,
+        short = 'n',
+        help = "Dry run mode, just print the post content without actually posting"
+    )]
+    dry_run: bool,
+    #[command(subcommand)]
+    command: Commands
+}
+
+#[derive(Subcommand, PartialEq)]
+enum Commands {
+    Random,
+    Today,
+    Stream
+}
+
+async fn post_to_bsky(agent: &BskyAgent, text: &str, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let rt = RichText::new_with_detect_facets(text).await?;
+    let record_data = RecordData {
+        created_at: Datetime::now(),
+        embed: None,
+        entities: None,
+        facets: rt.facets,
+        labels: None,
+        langs: None,
+        reply: None,
+        tags: Some(["#pi".to_string()].to_vec()),
+        text: rt.text,
+    };
+
+    if dry_run {
+        println!("Dry run mode: The post content would be:\n{:?}", record_data);
+    } else {
+        agent.create_record(record_data).await?;
+    }
+    Ok(())
+}
+
+
+async fn streaming_mode(username: String, password: String, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let agent = BskyAgent::builder().build().await?;
+    let _session = agent.login(&username, &password).await?;
+    println!("Streaming mode!");
+    println!("As you can tell, this doesn't exist yet.");
+    println!("Exiting streaming mode!");
+    Ok(())
 }
 
 #[tokio::main]
@@ -103,10 +133,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (username, password) = read_credentials()?;
 
-    let number = if cli.today {
-        get_today_date().parse::<u32>()?
-    } else {
-        generate_random_number()
+    if cli.command == Commands::Stream {
+        streaming_mode(username, password, cli.dry_run).await?;
+        return Ok(());
+    }
+    let number = match cli.command {
+        Commands::Today => get_today_date().parse::<u32>()?,
+        _ => generate_random_number(),
     };
 
     let search_result = search_pi(number).await?;
@@ -114,25 +147,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
     let _session = agent.login(&username, &password).await?;
 
-    if let Some(first_entry) = search_result.r.first() {
-        let post_content = if cli.today {
-            format!(
-                "I found today in pi, {}, at position {}. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
-                number,
-                first_entry.p,
-                search_result.r.len()
-            )
-        } else {
-            format!(
-                "The string {} was found at position {} in Pi. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
-                number,
-                first_entry.p,
-                search_result.r.len()
-            )
-        };
+    let post_content = match cli.command {
+        Commands::Today => format!(
+            "I found today in pi, {}, at position {}. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
+            number,
+            search_result.r.first().map_or(0, |entry| entry.p),
+            search_result.r.len()
+        ),
+        _ => format!(
+            "The string {} was found at position {} in Pi. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
+            number,
+            search_result.r.first().map_or(0, |entry| entry.p),
+            search_result.r.len()
+        ),
+    };
 
-        post_to_bsky(&agent, &post_content).await?;
-    }
+    post_to_bsky(&agent, &post_content, cli.dry_run).await?;
 
     Ok(())
 }

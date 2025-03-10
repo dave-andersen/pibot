@@ -4,22 +4,19 @@ use atrium_api::app::bsky::richtext::facet::MainFeaturesItem::Mention;
 use atrium_api::com::atproto::repo::strong_ref;
 use atrium_api::types::Union;
 use atrium_api::types::string::Datetime;
-use atrium_api::{record::KnownRecord::AppBskyFeedPost, types::string};
+use atrium_api::record::KnownRecord::AppBskyFeedPost;
 use bsky_sdk::BskyAgent;
 use bsky_sdk::rich_text::RichText;
 use clap::{Parser, Subcommand};
-use fastrand;
 use jetstream_oxide::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     events::{JetstreamEvent::Commit, commit::CommitEvent},
 };
-use reqwest;
 use serde::Deserialize;
 use serde_json::Value;
 use std::env;
 use std::fs::File;
 use std::io::Read;
-use tokio;
 
 fn read_credentials() -> Result<(String, String, String), Box<dyn std::error::Error>> {
     let home_dir = env::var("HOME")?;
@@ -147,12 +144,12 @@ async fn streaming_mode(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
-    let session = agent.login(&username, &password).await?;
+    let _session = agent.login(&username, &password).await?;
     println!("Streaming mode!");
     let target_did = atrium_api::types::string::Did::new(watch_did.into())?;
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
     let config = JetstreamConfig {
-        wanted_collections: vec![nsid.into()],
+        wanted_collections: vec![nsid],
         endpoint: DefaultJetstreamEndpoints::USEastTwo.into(),
         compression: JetstreamCompression::Zstd,
         ..Default::default()
@@ -162,33 +159,25 @@ async fn streaming_mode(
     let receiver = jetstream.connect().await?;
 
     while let Ok(event) = receiver.recv_async().await {
-        match event {
-            Commit(CommitEvent::Create { info, commit, .. }) => {
-                let event_did = info.did.to_string();
-                if let AppBskyFeedPost(record) = &commit.record {
-                    let mut matches = false;
-                    if let Some(facets) = &record.facets {
-                        for facet in facets {
-                            for feature in &facet.data.features {
-                                if let Union::Refs(Mention(m)) = feature {
-                                    if m.data.did == target_did {
-                                        matches = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if matches {
-                        if !dry_run {
-                            handle_message(&agent, &event_did, &commit).await;
-                        } else {
-                            println!("Dry run mode: Would handle message from {}", event_did);
-                            println!("Message to post: {:#?}", record);
-                        }
+        if let Commit(CommitEvent::Create { info, commit, .. }) = event {
+            let event_did = info.did.to_string();
+            if let AppBskyFeedPost(record) = &commit.record {
+                let matches = record.facets.as_ref().is_some_and(|facets| {
+                    facets.iter().any(|facet| {
+                        facet.data.features.iter().any(|feature| {
+                            matches!(feature, Union::Refs(Mention(m)) if m.data.did == target_did)
+                        })
+                    })
+                });
+                if matches {
+                    if !dry_run {
+                        handle_message(&agent, &event_did, &commit).await;
+                    } else {
+                        println!("Dry run mode: Would handle message from {}", event_did);
+                        println!("Message to post: {:#?}", record);
                     }
                 }
             }
-            _ => {}
         }
     }
     println!("Exiting streaming mode!");
@@ -231,10 +220,10 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
     }
     match search_result.r.first() {
         None =>
-            Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more.").into()),
+            Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more.")),
         Some(entry) => {
             if entry.status == "notfound" {
-                Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more.").into())
+                Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."))
             } else {
             Ok(format!(
         "I found {} at position {}. It appears {} times in the first 200 million digits of pi. Thanks for searching!\n\nFind all the #pi you can eat at https://angio.net/pi/",
@@ -252,12 +241,9 @@ pub async fn handle_message(
     did: &str,
     commit: &jetstream_oxide::events::commit::CommitData,
 ) {
-    use bsky_sdk::rich_text::RichText;
-
     if let AppBskyFeedPost(record) = &commit.record {
-        let rt = RichText::new_with_detect_facets(&record.text).await;
         // Ugh - have to figure out if the post itself was a reply. If it was,
-        // get the "parent" field out of it and propagate it here.
+        // get the "root" field out of it and propagate it here.
         // Second ugh - we need to craft a URI for the post since it doesn't
         // seem to be included in the data.
         // at://<did>/app.bsky.feed.post/<rkey>
@@ -278,7 +264,6 @@ pub async fn handle_message(
 
         let root_data = match &record.reply {
             Some(data) => {
-                println!("Found a reply ref: {data:?}");
                 strong_ref::MainData {
                 cid: data.root.cid.clone(),
                 uri: data.root.uri.clone(),
@@ -293,7 +278,7 @@ pub async fn handle_message(
             created_at: Datetime::now(),
             embed: None,
             entities: None,
-            facets: None, // rt.facets,
+            facets: None,
             labels: None,
             langs: None,
             reply: Some(
@@ -301,14 +286,14 @@ pub async fn handle_message(
                     root: root_data.into(),
                     parent: strong_ref::MainData {
                         cid: commit.cid.clone(),
-                        uri: uri.into(),
+                        uri,
                     }
                     .into(),
                 }
                 .into(),
             ),
             tags: Some(["#pi".to_string()].to_vec()),
-            text: reply_text.into(),
+            text: reply_text,
         };
 
         if let Err(e) = agent.create_record(record_data).await {

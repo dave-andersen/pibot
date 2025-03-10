@@ -2,9 +2,9 @@ use anyhow::anyhow;
 use atrium_api::app::bsky::feed::post::{RecordData, ReplyRefData};
 use atrium_api::app::bsky::richtext::facet::MainFeaturesItem::Mention;
 use atrium_api::com::atproto::repo::strong_ref;
+use atrium_api::record::KnownRecord::AppBskyFeedPost;
 use atrium_api::types::Union;
 use atrium_api::types::string::Datetime;
-use atrium_api::record::KnownRecord::AppBskyFeedPost;
 use bsky_sdk::BskyAgent;
 use bsky_sdk::rich_text::RichText;
 use clap::{Parser, Subcommand};
@@ -135,7 +135,9 @@ async fn streaming_mode(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent.login(&credentials.username, &credentials.password).await?;
+    let _session = agent
+        .login(&credentials.username, &credentials.password)
+        .await?;
     println!("Streaming mode!");
     let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
@@ -210,21 +212,24 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
         return Err(anyhow!("Error searching pi"));
     }
     match search_result.r.first() {
-        None =>
-            Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more.")),
+        None => Ok(format!(
+            "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
+        )),
         Some(entry) => {
             if entry.status == "notfound" {
-                Ok(format!("Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."))
+                Ok(format!(
+                    "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
+                ))
             } else {
-            Ok(format!(
-        "I found {} at position {}. It appears {} times in the first 200 million digits of pi. Thanks for searching!\n\nFind all the #pi you can eat at https://angio.net/pi/",
-        number,
-        search_result.r.first().map_or(0, |entry| entry.p),
-        search_result.r.len()
-    ))
+                Ok(format!(
+                    "I found {} at position {}. It appears {} times in the first 200 million digits of pi. Thanks for searching!\n\nFind all the #pi you can eat at https://angio.net/pi/",
+                    number,
+                    search_result.r.first().map_or(0, |entry| entry.p),
+                    search_result.r.len()
+                ))
+            }
         }
     }
-}
 }
 
 pub async fn handle_message(
@@ -254,11 +259,10 @@ pub async fn handle_message(
         };
 
         let root_data = match &record.reply {
-            Some(data) => {
-                strong_ref::MainData {
+            Some(data) => strong_ref::MainData {
                 cid: data.root.cid.clone(),
                 uri: data.root.uri.clone(),
-            }},
+            },
             _ => strong_ref::MainData {
                 cid: commit.cid.clone(),
                 uri: uri.clone(),
@@ -311,21 +315,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let search_result = search_pi(number).await?;
 
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent.login(&credentials.username, &credentials.password).await?;
+    let _session = agent
+        .login(&credentials.username, &credentials.password)
+        .await?;
 
-    let post_content = match cli.command {
-        Commands::Today => format!(
-            "I found today in pi, {}, at position {}. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
-            number,
-            search_result.r.first().map_or(0, |entry| entry.p),
-            search_result.r.len()
+    let post_content = match search_result.r.first() {
+        None => format!(
+            "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
         ),
-        _ => format!(
-            "The string {} was found at position {} in Pi. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
-            number,
-            search_result.r.first().map_or(0, |entry| entry.p),
-            search_result.r.len()
-        ),
+        Some(entry) => {
+            if entry.status == "notfound" {
+                format!(
+                    "Rats, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
+                )
+            } else {
+                format!(
+                    "I found {} at position {}. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
+                    number,
+                    search_result.r.first().map_or(0, |entry| entry.p),
+                    search_result.r.len()
+                )
+            }
+        }
     };
 
     post_to_bsky(&agent, &post_content, cli.dry_run).await?;

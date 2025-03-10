@@ -13,31 +13,24 @@ use jetstream_oxide::{
     events::{JetstreamEvent::Commit, commit::CommitEvent},
 };
 use serde::Deserialize;
-use serde_json::Value;
-use std::env;
 use std::fs::File;
 use std::io::Read;
 
-fn read_credentials() -> Result<(String, String, String), Box<dyn std::error::Error>> {
-    let home_dir = env::var("HOME")?;
+#[derive(Deserialize)]
+struct Credentials {
+    username: String,
+    password: String,
+    watch_did: String,
+}
+
+fn read_credentials() -> Result<Credentials, Box<dyn std::error::Error>> {
+    let home_dir = std::env::var("HOME")?;
     let file_path = format!("{}/.pibot_login.json", home_dir);
     let mut file = File::open(file_path)?;
     let mut data = String::new();
     file.read_to_string(&mut data)?;
-    let json: Value = serde_json::from_str(&data)?;
-    let username = json["username"]
-        .as_str()
-        .ok_or("Username not found")?
-        .to_string();
-    let password = json["password"]
-        .as_str()
-        .ok_or("Password not found")?
-        .to_string();
-    let watch_did = json["watch_did"]
-        .as_str()
-        .ok_or("Watch DID not found")?
-        .to_string();
-    Ok((username, password, watch_did))
+    let credentials: Credentials = serde_json::from_str(&data)?;
+    Ok(credentials)
 }
 
 #[allow(dead_code)]
@@ -138,15 +131,13 @@ async fn post_to_bsky(
 }
 
 async fn streaming_mode(
-    username: String,
-    password: String,
-    watch_did: &str,
+    credentials: &Credentials,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent.login(&username, &password).await?;
+    let _session = agent.login(&credentials.username, &credentials.password).await?;
     println!("Streaming mode!");
-    let target_did = atrium_api::types::string::Did::new(watch_did.into())?;
+    let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
     let config = JetstreamConfig {
         wanted_collections: vec![nsid],
@@ -306,10 +297,10 @@ pub async fn handle_message(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let (username, password, watch_did) = read_credentials()?;
+    let credentials = read_credentials()?;
 
     if cli.command == Commands::Stream {
-        streaming_mode(username, password, &watch_did, cli.dry_run).await?;
+        streaming_mode(&credentials, cli.dry_run).await?;
         return Ok(());
     }
     let number = match cli.command {
@@ -320,7 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let search_result = search_pi(number).await?;
 
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent.login(&username, &password).await?;
+    let _session = agent.login(&credentials.username, &credentials.password).await?;
 
     let post_content = match cli.command {
         Commands::Today => format!(

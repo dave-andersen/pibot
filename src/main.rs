@@ -14,7 +14,6 @@ use jetstream_oxide::{
 };
 use serde::Deserialize;
 use std::fs::File;
-use std::io::Read;
 
 #[derive(Deserialize)]
 struct Credentials {
@@ -24,14 +23,13 @@ struct Credentials {
 }
 
 fn read_credentials() -> Result<Credentials, Box<dyn std::error::Error>> {
-    let home_dir = std::env::var("HOME")?;
-    let file_path = format!("{}/.pibot_login.json", home_dir);
-    let mut file = File::open(file_path)?;
-    let mut data = String::new();
-    file.read_to_string(&mut data)?;
-    let credentials: Credentials = serde_json::from_str(&data)?;
-    Ok(credentials)
-}
+    let file_path = dirs::home_dir()
+        .ok_or("Failed to get home directory")?
+        .join(".pibot_login.json");
+    let file = File::open(file_path)?;
+    let reader = std::io::BufReader::new(file);
+    serde_json::from_reader(reader)
+        .map_err(|e| e.into())}
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug)]
@@ -53,26 +51,18 @@ struct ResultEntry {
     c: u32,
 }
 
-async fn search_pi_str(number: &str) -> Result<PiSearchResult, Box<dyn std::error::Error>> {
+async fn search_pi(number: &str) -> Result<PiSearchResult, Box<dyn std::error::Error>> {
     let url = format!("https://www.angio.net/newpi/piquery?q={}", number);
     let response = reqwest::get(&url).await?.text().await?;
-    let result: PiSearchResult = serde_json::from_str(&response)?;
-    Ok(result)
-}
-
-async fn search_pi(number: u32) -> Result<PiSearchResult, Box<dyn std::error::Error>> {
-    let url = format!("https://www.angio.net/newpi/piquery?q={}", number);
-    let response = reqwest::get(&url).await?.text().await?;
-    let result: PiSearchResult = serde_json::from_str(&response)?;
-    Ok(result)
-}
-
-fn generate_random_number() -> u32 {
-    fastrand::u32(0..100_000_000)
+    Ok(serde_json::from_str(&response)?)
 }
 
 fn get_today_date() -> String {
     chrono::Utc::now().format("%Y%m%d").to_string()
+}
+
+fn get_today_date_with_hyphens() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
 #[derive(clap::Parser)]
@@ -201,7 +191,7 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
     };
     println!("Searching for: {}", number);
 
-    let search_result = match search_pi_str(&number).await {
+    let search_result = match search_pi(&number).await {
         Ok(result) => result,
         Err(e) => {
             println!("Error searching: {e}");
@@ -293,7 +283,7 @@ fn create_response(search_result: &PiSearchResult, number: &str, extra: &str) ->
                 format!(
                     "I found {} at position {}. It appears {} times in the first 200 million digits of pi.{extra}\n\nFind all the #pi you can eat at https://angio.net/pi/",
                     number,
-                    search_result.r.first().map_or(0, |entry| entry.p),
+                    entry.p,
                     search_result.r.len()
                 )
             }
@@ -312,11 +302,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let number = match cli.command {
-        Commands::Today => get_today_date().parse::<u32>()?,
-        _ => generate_random_number(),
+        Commands::Today => get_today_date(),
+        _ => fastrand::u32(0..100_000_000).to_string(),
     };
 
-    let search_result = search_pi(number).await?;
+    let search_result = search_pi(&number).await?;
 
     let agent = BskyAgent::builder().build().await?;
     let _session = agent
@@ -325,15 +315,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     
     let post_content = if cli.command == Commands::Today {
-        create_response(&search_result, &get_today_date(), "")
+        create_response(&search_result, &get_today_date_with_hyphens(), "")
     } else {
-        create_response(&search_result, &number.to_string(), "")
+        create_response(&search_result, &number, "")
     };
 
     post_to_bsky(&agent, &post_content, cli.dry_run).await?;
 
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

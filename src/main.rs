@@ -211,25 +211,7 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
     if search_result.status == "error" {
         return Err(anyhow!("Error searching pi"));
     }
-    match search_result.r.first() {
-        None => Ok(format!(
-            "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
-        )),
-        Some(entry) => {
-            if entry.status == "notfound" {
-                Ok(format!(
-                    "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
-                ))
-            } else {
-                Ok(format!(
-                    "I found {} at position {}. It appears {} times in the first 200 million digits of pi. Thanks for searching!\n\nFind all the #pi you can eat at https://angio.net/pi/",
-                    number,
-                    search_result.r.first().map_or(0, |entry| entry.p),
-                    search_result.r.len()
-                ))
-            }
-        }
-    }
+    Ok(create_response(&search_result, &number, "  Thanks for searching!"))
 }
 
 pub async fn handle_message(
@@ -287,12 +269,34 @@ pub async fn handle_message(
                 }
                 .into(),
             ),
-            tags: Some(["#pi".to_string()].to_vec()),
+            tags: Some(vec!["#pi".to_string()]),
             text: reply_text,
         };
 
         if let Err(e) = agent.create_record(record_data).await {
             println!("Error creating record: {}", e);
+        }
+    }
+}
+
+fn create_response(search_result: &PiSearchResult, number: &str, extra: &str) -> String {
+    match search_result.r.first() {
+        None => format!(
+            "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
+        ),
+        Some(entry) => {
+            if entry.status == "notfound" {
+                format!(
+                    "Rats, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
+                )
+            } else {
+                format!(
+                    "I found {} at position {}. It appears {} times in the first 200 million digits of pi.{extra}\n\nFind all the #pi you can eat at https://angio.net/pi/",
+                    number,
+                    search_result.r.first().map_or(0, |entry| entry.p),
+                    search_result.r.len()
+                )
+            }
         }
     }
 }
@@ -319,24 +323,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .login(&credentials.username, &credentials.password)
         .await?;
 
-    let post_content = match search_result.r.first() {
-        None => format!(
-            "Sorry, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
-        ),
-        Some(entry) => {
-            if entry.status == "notfound" {
-                format!(
-                    "Rats, I couldn't find {number} in the first 200m digits of Pi. It's me, not you; every number should be in Pi if I had more."
-                )
-            } else {
-                format!(
-                    "I found {} at position {}. It appears {} times in the first 200 million digits of pi.\n\nFind all the #pi you can eat at https://angio.net/pi/",
-                    number,
-                    search_result.r.first().map_or(0, |entry| entry.p),
-                    search_result.r.len()
-                )
-            }
-        }
+    
+    let post_content = if cli.command == Commands::Today {
+        create_response(&search_result, &get_today_date(), "")
+    } else {
+        create_response(&search_result, &number.to_string(), "")
     };
 
     post_to_bsky(&agent, &post_content, cli.dry_run).await?;
@@ -350,7 +341,7 @@ mod tests {
     #[test]
     fn test_extract_number() {
         assert_eq!(extract_number("@pisearch 12345"), Some("12345".to_string()));
-        assert_eq!(extract_number("@pisearch 67890"), Some("67890".to_string()));
+        assert_eq!(extract_number("@pisearch.bsky.social 67890"), Some("67890".to_string()));
         assert_eq!(
             extract_number("@pisearch 123-456-7890"),
             Some("1234567890".to_string())
@@ -359,9 +350,15 @@ mod tests {
         assert_eq!(extract_number("@pisearch"), None);
         assert_eq!(extract_number("@pisearch -"), None);
         assert_eq!(extract_number("@pisearch 123-"), Some("123".to_string()));
+        assert_eq!(extract_number("@pisearch -123"), Some("123".to_string()));
         assert_eq!(
             extract_number("Hey @pisearch.bsky.social where is 2025-03-09 in Pi?"),
             Some("20250309".to_string())
+        );
+        assert_eq!(
+            extract_number("@pisearch 12345 and @pisearch 67890"),
+            Some
+                ("12345".to_string())
         );
     }
 }

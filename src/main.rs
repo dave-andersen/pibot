@@ -28,8 +28,8 @@ fn read_credentials() -> Result<Credentials, Box<dyn std::error::Error>> {
         .join(".pibot_login.json");
     let file = File::open(file_path)?;
     let reader = std::io::BufReader::new(file);
-    serde_json::from_reader(reader)
-        .map_err(|e| e.into())}
+    Ok(serde_json::from_reader(reader)?)
+}
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug)]
@@ -189,7 +189,6 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
             return Err(anyhow!("No number found"));
         }
     };
-    println!("Searching for: {}", number);
 
     let search_result = match search_pi(&number).await {
         Ok(result) => result,

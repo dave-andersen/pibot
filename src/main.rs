@@ -14,6 +14,7 @@ use jetstream_oxide::{
 };
 use serde::Deserialize;
 use std::fs::File;
+use futures::{stream::{Stream, StreamExt}, pin_mut};
 
 #[derive(Deserialize)]
 struct Credentials {
@@ -128,8 +129,31 @@ async fn streaming_mode(
     let _session = agent
         .login(&credentials.username, &credentials.password)
         .await?;
-    println!("Streaming mode!");
+
     let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
+    
+    let filtered_stream = filtered_jetstream(target_did).await?;
+    pin_mut!(filtered_stream); // Pin the stream in place
+
+    while let Some((event_did, commit)) = filtered_stream.next().await {
+        if !dry_run {
+            handle_message(&agent, &event_did, &commit).await;
+        } else {
+            println!("Dry run mode: Would handle message from {}", event_did);
+            if let AppBskyFeedPost(record) = &commit.record {
+                println!("Message to post: {:#?}", record);
+            }
+        }
+    }
+
+    println!("Exiting streaming mode!");
+    Ok(())
+}
+
+// Renamed function that now handles jetstream creation and filtering
+async fn filtered_jetstream(
+    target_did: atrium_api::types::string::Did,
+) -> Result<impl Stream<Item = (String, jetstream_oxide::events::commit::CommitData)>, Box<dyn std::error::Error>> {
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
     let config = JetstreamConfig {
         wanted_collections: vec![nsid],
@@ -140,31 +164,29 @@ async fn streaming_mode(
 
     let jetstream = JetstreamConnector::new(config).unwrap();
     let receiver = jetstream.connect().await?;
-
-    while let Ok(event) = receiver.recv_async().await {
-        if let Commit(CommitEvent::Create { info, commit, .. }) = event {
-            let event_did = info.did.to_string();
-            if let AppBskyFeedPost(record) = &commit.record {
-                let matches = record.facets.as_ref().is_some_and(|facets| {
-                    facets.iter().any(|facet| {
-                        facet.data.features.iter().any(|feature| {
-                            matches!(feature, Union::Refs(Mention(m)) if m.data.did == target_did)
+    let receiver_stream = receiver.into_stream();
+    
+    // Filter the stream using the same logic as before
+    Ok(async_stream::stream! {
+        let mut receiver_stream = receiver_stream;
+        while let Some(event) = receiver_stream.next().await {
+            if let Commit(CommitEvent::Create { info, commit, .. }) = event {
+                let event_did = info.did.to_string();
+                if let AppBskyFeedPost(record) = &commit.record {
+                    let matches = record.facets.as_ref().is_some_and(|facets| {
+                        facets.iter().any(|facet| {
+                            facet.data.features.iter().any(|feature| {
+                                matches!(feature, Union::Refs(Mention(m)) if m.data.did == target_did)
+                            })
                         })
-                    })
-                });
-                if matches {
-                    if !dry_run {
-                        handle_message(&agent, &event_did, &commit).await;
-                    } else {
-                        println!("Dry run mode: Would handle message from {}", event_did);
-                        println!("Message to post: {:#?}", record);
+                    });
+                    if matches {
+                        yield (event_did, commit);
                     }
                 }
             }
         }
-    }
-    println!("Exiting streaming mode!");
-    Ok(())
+    })
 }
 
 pub fn extract_number(text: &str) -> Option<String> {
@@ -204,6 +226,16 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
 }
 
 pub async fn handle_message(
+    agent: &BskyAgent,
+    did: &str,
+    commit: &jetstream_oxide::events::commit::CommitData,
+) {
+    if let AppBskyFeedPost(record) = &commit.record {
+        println!("Message: {}", record.text);
+    }
+}
+
+pub async fn handle_message_real(
     agent: &BskyAgent,
     did: &str,
     commit: &jetstream_oxide::events::commit::CommitData,

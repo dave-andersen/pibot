@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
+async-stream = "0.3.6"
 atrium-api = { version = "0.25" }
 bsky-sdk = "0.1.16"
 chrono = "0.4.40"

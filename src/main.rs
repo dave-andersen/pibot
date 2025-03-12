@@ -133,7 +133,7 @@ async fn streaming_mode(
     let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
     
     let filtered_stream = filtered_jetstream(target_did).await?;
-    pin_mut!(filtered_stream); // Pin the stream in place
+    pin_mut!(filtered_stream);
 
     while let Some((event_did, commit)) = filtered_stream.next().await {
         if !dry_run {
@@ -150,7 +150,6 @@ async fn streaming_mode(
     Ok(())
 }
 
-// Renamed function that now handles jetstream creation and filtering
 async fn filtered_jetstream(
     target_did: atrium_api::types::string::Did,
 ) -> Result<impl Stream<Item = (String, jetstream_oxide::events::commit::CommitData)>, Box<dyn std::error::Error>> {
@@ -234,6 +233,38 @@ pub async fn handle_message(
         println!("Message: {}", record.text);
     }
 }
+fn create_reply_ref_data(
+    record: &RecordData,
+    commit: &jetstream_oxide::events::commit::CommitData,
+    did: &str,
+) -> ReplyRefData {
+    let uri = format!(
+        "at://{}/{}/{}",
+        did,
+        commit.info.collection.to_string(),
+        commit.info.rkey
+    );
+
+    let root_data = match &record.reply {
+        Some(data) => strong_ref::MainData {
+            cid: data.root.cid.clone(),
+            uri: data.root.uri.clone(),
+        },
+        _ => strong_ref::MainData {
+            cid: commit.cid.clone(),
+            uri: uri.clone(),
+        },
+    };
+
+    ReplyRefData {
+        root: root_data.into(),
+        parent: strong_ref::MainData {
+            cid: commit.cid.clone(),
+            uri,
+        }
+        .into(),
+    }
+}
 
 pub async fn handle_message_real(
     agent: &BskyAgent,
@@ -241,18 +272,6 @@ pub async fn handle_message_real(
     commit: &jetstream_oxide::events::commit::CommitData,
 ) {
     if let AppBskyFeedPost(record) = &commit.record {
-        // Ugh - have to figure out if the post itself was a reply. If it was,
-        // get the "root" field out of it and propagate it here.
-        // Second ugh - we need to craft a URI for the post since it doesn't
-        // seem to be included in the data.
-        // at://<did>/app.bsky.feed.post/<rkey>
-        let uri = format!(
-            "at://{}/{}/{}",
-            did,
-            commit.info.collection.to_string(),
-            commit.info.rkey
-        );
-
         let reply_text = match do_pisearch(&record.text).await {
             Ok(text) => text,
             Err(e) => {
@@ -261,16 +280,7 @@ pub async fn handle_message_real(
             }
         };
 
-        let root_data = match &record.reply {
-            Some(data) => strong_ref::MainData {
-                cid: data.root.cid.clone(),
-                uri: data.root.uri.clone(),
-            },
-            _ => strong_ref::MainData {
-                cid: commit.cid.clone(),
-                uri: uri.clone(),
-            },
-        };
+        let reply_ref_data = create_reply_ref_data(&record, &commit, did);
 
         let record_data = RecordData {
             created_at: Datetime::now(),
@@ -279,17 +289,7 @@ pub async fn handle_message_real(
             facets: None,
             labels: None,
             langs: None,
-            reply: Some(
-                ReplyRefData {
-                    root: root_data.into(),
-                    parent: strong_ref::MainData {
-                        cid: commit.cid.clone(),
-                        uri,
-                    }
-                    .into(),
-                }
-                .into(),
-            ),
+            reply: Some(reply_ref_data.into()),
             tags: Some(vec!["#pi".to_string()]),
             text: reply_text,
         };

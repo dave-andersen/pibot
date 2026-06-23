@@ -80,6 +80,12 @@ struct Cli {
         help = "Dry run mode, just print the post content without actually posting"
     )]
     dry_run: bool,
+    #[arg(
+        long,
+        short = 'd',
+        help = "Dump the first 10 messages from the stream and exit (does not post, ignores watch_did filters)"
+    )]
+    dump_messages: bool,
     #[arg(long, short='v')]
     verbose: bool,
     #[command(subcommand)]
@@ -123,44 +129,89 @@ async fn post_to_bsky(
 }
 
 async fn streaming_mode(
-    credentials: &Credentials,
+    credentials: Option<&Credentials>,
     dry_run: bool,
+    dump_messages: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
-    if !dry_run {
+    if !dry_run && !dump_messages {
+        let creds = credentials.ok_or("Credentials required for non-dry-run streaming mode")?;
         agent
-            .login(&credentials.username, &credentials.password)
+            .login(&creds.username, &creds.password)
             .await?;
     }
 
-    let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
+    let target_did = if dump_messages {
+        atrium_api::types::string::Did::new("did:plc:dummy".into())?
+    } else {
+        let creds = credentials.ok_or("Credentials required for target DID lookup")?;
+        atrium_api::types::string::Did::new((&creds.watch_did).into())?
+    };
     
-    let filtered_stream = filtered_jetstream(target_did).await?;
-    pin_mut!(filtered_stream);
+    let last_time_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut retry_delay = std::time::Duration::from_secs(1);
+    let mut msg_count = 0;
 
-    while let Some((event_did, commit)) = filtered_stream.next().await {
-        if !dry_run {
-            handle_message(&agent, &event_did, &commit).await;
+    loop {
+        let last_val = last_time_us.load(std::sync::atomic::Ordering::Relaxed);
+        let cursor = if last_val > 0 {
+            chrono::DateTime::from_timestamp_micros(last_val as i64)
         } else {
-            println!("Dry run mode: Would handle message from {}", event_did);
-            if let AppBskyFeedPost(record) = &commit.record {
-                println!("Message to post: {:#?}", record);
+            None
+        };
+
+        println!("Connecting to Jetstream (cursor: {:?})...", cursor);
+        match filtered_jetstream(target_did.clone(), cursor, last_time_us.clone(), dump_messages).await {
+            Ok(filtered_stream) => {
+                // Reset retry delay on successful connection
+                retry_delay = std::time::Duration::from_secs(1);
+                
+                pin_mut!(filtered_stream);
+                while let Some((event_did, commit)) = filtered_stream.next().await {
+                    if dump_messages {
+                        println!("Dump: From DID: {}", event_did);
+                        if let AppBskyFeedPost(record) = &commit.record {
+                            println!("Post: {}", record.text);
+                        }
+                        msg_count += 1;
+                        if msg_count >= 10 {
+                            println!("Dumped 10 messages. Exiting!");
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    if !dry_run {
+                        handle_message(&agent, &event_did, &commit).await;
+                    } else {
+                        println!("Dry run mode: Would handle message from {}", event_did);
+                        if let AppBskyFeedPost(record) = &commit.record {
+                            println!("Message to post: {:#?}", record);
+                        }
+                    }
+                }
+                println!("Jetstream stream ended. Reconnecting...");
+            }
+            Err(e) => {
+                println!("Error connecting to Jetstream: {}. Retrying in {:?}...", e, retry_delay);
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(60));
             }
         }
     }
-
-    println!("Exiting streaming mode!");
-    Ok(())
 }
 
 async fn filtered_jetstream(
     target_did: atrium_api::types::string::Did,
+    cursor: Option<chrono::DateTime<chrono::Utc>>,
+    last_time_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    match_any_did: bool,
 ) -> Result<impl Stream<Item = (String, jetstream_oxide::events::commit::CommitData)>, Box<dyn std::error::Error>> {
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
     let config = JetstreamConfig {
         wanted_collections: vec![nsid],
         endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
         compression: JetstreamCompression::Zstd,
+        cursor,
         ..Default::default()
     };
 
@@ -172,20 +223,40 @@ async fn filtered_jetstream(
     Ok(async_stream::stream! {
         let mut receiver_stream = receiver_stream;
         while let Some(event) = receiver_stream.next().await {
-            if let Commit(CommitEvent::Create { info, commit, .. }) = event {
-                let event_did = info.did.to_string();
-                if let AppBskyFeedPost(record) = &commit.record {
-                    let matches = record.facets.as_ref().is_some_and(|facets| {
-                        facets.iter().any(|facet| {
-                            facet.data.features.iter().any(|feature| {
-                                matches!(feature, Union::Refs(Mention(m)) if m.data.did == target_did)
-                            })
-                        })
-                    });
-                    if matches {
-                        yield (event_did, commit);
+            match event {
+                Commit(commit_event) => {
+                    let (info, commit) = match commit_event {
+                        CommitEvent::Create { info, commit } => {
+                            last_time_us.store(info.time_us, std::sync::atomic::Ordering::Relaxed);
+                            (info, Some(commit))
+                        }
+                        CommitEvent::Update { info, commit } => {
+                            last_time_us.store(info.time_us, std::sync::atomic::Ordering::Relaxed);
+                            (info, Some(commit))
+                        }
+                        CommitEvent::Delete { info, .. } => {
+                            last_time_us.store(info.time_us, std::sync::atomic::Ordering::Relaxed);
+                            (info, None)
+                        }
+                    };
+
+                    if let Some(commit) = commit {
+                        let event_did = info.did.to_string();
+                        if let AppBskyFeedPost(record) = &commit.record {
+                            let matches = record.facets.as_ref().is_some_and(|facets| {
+                                facets.iter().any(|facet| {
+                                    facet.data.features.iter().any(|feature| {
+                                        matches!(feature, Union::Refs(Mention(m)) if match_any_did || m.data.did == target_did)
+                                    })
+                                })
+                            });
+                            if matches {
+                                yield (event_did, commit);
+                            }
+                        }
                     }
                 }
+                _ => {}
             }
         }
     })
@@ -321,10 +392,16 @@ fn create_response(search_result: &PiSearchResult, number: &str, extra: &str) ->
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let credentials = read_credentials()?;
+    let credentials = if (cli.command == Commands::Stream && cli.dump_messages)
+        || (cli.command != Commands::Stream && cli.dry_run)
+    {
+        None
+    } else {
+        Some(read_credentials()?)
+    };
 
     if cli.command == Commands::Stream {
-        streaming_mode(&credentials, cli.dry_run).await?;
+        streaming_mode(credentials.as_ref(), cli.dry_run, cli.dump_messages).await?;
         return Ok(());
     }
     let number = match cli.command {
@@ -344,8 +421,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let agent = BskyAgent::builder().build().await?;
     if !cli.dry_run {
+        let creds = credentials.as_ref().ok_or("Credentials required for posting")?;
         agent
-            .login(&credentials.username, &credentials.password)
+            .login(&creds.username, &creds.password)
             .await?;
     }
 

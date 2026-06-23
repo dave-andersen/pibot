@@ -243,7 +243,7 @@ fn create_reply_ref_data(
     let uri = format!(
         "at://{}/{}/{}",
         did,
-        commit.info.collection.to_string(),
+        &*commit.info.collection,
         commit.info.rkey
     );
 
@@ -282,7 +282,7 @@ pub async fn handle_message_real(
             }
         };
 
-        let reply_ref_data = create_reply_ref_data(&record, &commit, did);
+        let reply_ref_data = create_reply_ref_data(record, commit, did);
 
         let record_data = RecordData {
             created_at: Datetime::now(),

@@ -81,6 +81,8 @@ struct Cli {
         help = "Dry run mode, just print the post content without actually posting"
     )]
     dry_run: bool,
+    #[arg(long, short='v')]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -156,7 +158,7 @@ async fn filtered_jetstream(
     let nsid = jetstream_oxide::exports::Nsid::new("app.bsky.feed.post".into()).unwrap();
     let config = JetstreamConfig {
         wanted_collections: vec![nsid],
-        endpoint: DefaultJetstreamEndpoints::USEastTwo.into(),
+        endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
         compression: JetstreamCompression::Zstd,
         ..Default::default()
     };
@@ -336,8 +338,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Today => get_today_date(),
         _ => fastrand::u32(0..100_000_000).to_string(),
     };
+    if cli.verbose {
+        println!("[pibot] Number: {number}");
+    }
 
     let search_result = search_pi(&number).await?;
+
+    if cli.verbose {
+        println!("[pibot]: Search result: {search_result:?}");
+    }
 
     let agent = BskyAgent::builder().build().await?;
     let _session = agent

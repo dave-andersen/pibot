@@ -226,15 +226,6 @@ pub async fn do_pisearch(text: &str) -> anyhow::Result<String> {
     Ok(create_response(&search_result, &number, "  Thanks for searching!"))
 }
 
-pub async fn handle_message(
-    agent: &BskyAgent,
-    did: &str,
-    commit: &jetstream_oxide::events::commit::CommitData,
-) {
-    if let AppBskyFeedPost(record) = &commit.record {
-        println!("Message: {}", record.text);
-    }
-}
 fn create_reply_ref_data(
     record: &RecordData,
     commit: &jetstream_oxide::events::commit::CommitData,
@@ -268,7 +259,7 @@ fn create_reply_ref_data(
     }
 }
 
-pub async fn handle_message_real(
+pub async fn handle_message(
     agent: &BskyAgent,
     did: &str,
     commit: &jetstream_oxide::events::commit::CommitData,

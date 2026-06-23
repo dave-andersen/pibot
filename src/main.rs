@@ -74,7 +74,6 @@ fn get_today_date_with_hyphens() -> String {
     about = "Posts Pi search results to Bsky"
 )]
 struct Cli {
-    #[arg(long, help = "Be a BlueSky Bot. Commands: random, today, stream")]
     #[arg(
         long,
         short = 'n',
@@ -128,9 +127,11 @@ async fn streaming_mode(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent
-        .login(&credentials.username, &credentials.password)
-        .await?;
+    if !dry_run {
+        agent
+            .login(&credentials.username, &credentials.password)
+            .await?;
+    }
 
     let target_did = atrium_api::types::string::Did::new((&credentials.watch_did).into())?;
     
@@ -191,7 +192,8 @@ async fn filtered_jetstream(
 }
 
 pub fn extract_number(text: &str) -> Option<String> {
-    let re = regex::Regex::new(r"@pisearch[^\d]*(\d[\d\-]*)").unwrap();
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"@pisearch[^\d]*(\d[\d\-]*)").unwrap());
     re.captures(text)
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str().to_string())
@@ -327,7 +329,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let number = match cli.command {
         Commands::Today => get_today_date(),
-        _ => fastrand::u32(0..100_000_000).to_string(),
+        Commands::Random => fastrand::u32(0..100_000_000).to_string(),
+        Commands::Stream => unreachable!("Stream subcommand is handled via early return"),
     };
     if cli.verbose {
         println!("[pibot] Number: {number}");
@@ -340,9 +343,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let agent = BskyAgent::builder().build().await?;
-    let _session = agent
-        .login(&credentials.username, &credentials.password)
-        .await?;
+    if !cli.dry_run {
+        agent
+            .login(&credentials.username, &credentials.password)
+            .await?;
+    }
 
     
     let post_content = if cli.command == Commands::Today {
